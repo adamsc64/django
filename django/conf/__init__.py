@@ -7,6 +7,7 @@ a list of all possible variables.
 """
 
 import importlib
+import json
 import os
 import time     # Needed for Windows
 
@@ -16,6 +17,7 @@ from django.utils.functional import LazyObject, empty
 from django.utils import six
 
 ENVIRONMENT_VARIABLE = "DJANGO_SETTINGS_MODULE"
+ENVIRONMENT_KEY_PREFIX = "DJANGO_"
 
 
 class LazySettings(LazyObject):
@@ -32,6 +34,15 @@ class LazySettings(LazyObject):
         """
         settings_module = os.environ.get(ENVIRONMENT_VARIABLE)
         if not settings_module:
+            # If any Django settings are set in environment variables, we can
+            # configure using the alternate method.
+            if any([(ENVIRONMENT_KEY_PREFIX + key in os.environ)
+                    for key
+                    in global_settings.__dict__.keys()
+                    ]):
+                self.configure()
+                return
+
             desc = ("setting %s" % name) if name else "settings"
             raise ImproperlyConfigured(
                 "Requested %s, but settings are not configured. "
@@ -79,9 +90,30 @@ class BaseSettings(object):
                 "to a tuple, not a string.")
         object.__setattr__(self, name, value)
 
+    def _set_from_environ(self):
+        """
+        Retrieve and assign Django settings from environment variables with
+        correct prefix.
+        """
+        for key, value in os.environ.items():
+            if not key.startswith(ENVIRONMENT_KEY_PREFIX):
+                continue
+            key = key[7:]
+            # If the value can be interpreted as JSON, do so. Note that this
+            # operation will also interpret integers as valid JSON, and
+            # will result in converting to type ``int``.
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+            setattr(self, key, value)
+
 
 class Settings(BaseSettings):
     def __init__(self, settings_module):
+        # Load configuration from environment variables.
+        self._set_from_environ()
+
         # update this dict from global settings (but only for ALL_CAPS settings)
         for setting in dir(global_settings):
             if setting.isupper():
@@ -145,6 +177,8 @@ class UserSettingsHolder(BaseSettings):
         """
         self.__dict__['_deleted'] = set()
         self.default_settings = default_settings
+        # Load configuration from environment variables.
+        self._set_from_environ()
 
     def __getattr__(self, name):
         if name in self._deleted:
